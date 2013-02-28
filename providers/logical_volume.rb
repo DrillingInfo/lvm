@@ -4,8 +4,15 @@ def initialize *args
     require 'mixlib/shellout'
 end
 
+def to_dm_name name
+    #The device mapper will double any hyphens found in a volume group or
+    #logical volume name so that it can properly locate the separator between
+    #the volume group and the logical volume in the device name.
+    name.gsub /-/, '--'
+end
+
 action :create do
-    device_name = "/dev/mapper/#{new_resource.group}-#{new_resource.name.gsub /-/, '--'}"
+    device_name = "/dev/mapper/#{to_dm_name(new_resource.group)}-#{to_dm_name(new_resource.name)}"
     fs_type = new_resource.filesystem
 
     ruby_block "create_logical_volume_#{new_resource.name}" do
@@ -24,7 +31,7 @@ action :create do
             end
             
             stripes = new_resource.stripes ? "--stripes #{new_resource.stripes}" : ''
-            stripe_size = new_resource.stripe_size ? "--stripesize #{new_resource.stripesize}" : ''
+            stripe_size = new_resource.stripe_size ? "--stripesize #{new_resource.stripe_size}" : ''
             mirrors = new_resource.mirrors ? "--mirrors #{new_resource.mirrors}" : ''
             contiguous = new_resource.contiguous ? "--contiguous y" : ''
             readahead = new_resource.readahead ? "--readahead #{new_resource.readahead}" : ''
@@ -42,28 +49,32 @@ action :create do
         only_if do
             lvm = LVM::LVM.new
             vg = lvm.volume_groups[new_resource.group]
-            return true if vg.nil?
-
-            found_lvs = vg.logical_volumes.select do |lv|
+            if vg.nil?
+              true
+            else
+              found_lvs = vg.logical_volumes.select do |lv|
                 lv.name == new_resource.name
+              end
+              found_lvs.empty?
             end
-            found_lvs.empty?
         end
     end
 
     execute "format_logical_volume_#{new_resource.group}_#{new_resource.name}" do
         command "yes | mkfs -t #{fs_type} #{device_name}"
         not_if do
-            return true if fs_type.nil?
+            if fs_type.nil?
+              true
+            else
+              Chef::Log.debug "Checking to see if #{device_name} is formatted..."
+              blkid = ::Mixlib::ShellOut.new "blkid -o value -s TYPE #{device_name}"
+              blkid.run_command
 
-            Chef::Log.debug "Checking to see if #{device_name} is formatted..."
-            blkid = ::Mixlib::ShellOut.new "blkid -o value -s TYPE #{device_name}"
-            blkid.run_command
-
-            Chef::Log.debug "Result of check: #{blkid}"
-            Chef::Log.debug "blkid.exitstatus: #{blkid.exitstatus}"
-            Chef::Log.debug "blkid.stdout: #{blkid.stdout.inspect}"
-            blkid.exitstatus == 0 && blkid.stdout.strip == fs_type.strip
+              Chef::Log.debug "Result of check: #{blkid}"
+              Chef::Log.debug "blkid.exitstatus: #{blkid.exitstatus}"
+              Chef::Log.debug "blkid.stdout: #{blkid.stdout.inspect}"
+              blkid.exitstatus == 0 && blkid.stdout.strip == fs_type.strip
+            end
         end 
     end
 
